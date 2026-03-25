@@ -2,10 +2,13 @@ from typing import Any, ClassVar, Dict, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+try:
+    from qdrant_client import QdrantClient
+except ImportError:
+    QdrantClient = None
+
 
 class QdrantConfig(BaseModel):
-    from qdrant_client import QdrantClient
-
     QdrantClient: ClassVar[type] = QdrantClient
 
     collection_name: str = Field("mem0", description="Name of the collection")
