@@ -122,8 +122,10 @@ class LLMBase(ABC):
         params = {
             "temperature": self.config.temperature,
             "max_tokens": self.config.max_tokens,
-            "top_p": self.config.top_p,
         }
+        # Only add top_p if it's set (some providers like Bedrock don't allow temperature + top_p together)
+        if getattr(self.config, 'top_p', None) is not None:
+            params["top_p"] = self.config.top_p
 
         # Add provider-specific parameters from kwargs
         params.update(kwargs)

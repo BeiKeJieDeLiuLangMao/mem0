@@ -160,6 +160,7 @@ _LLM_CONFIG_FACTORIES = {
 
 def _create_llm_config(provider, model, api_key, base_url, ollama_base_url):
     """Build LLM config using registered provider factory or generic fallback."""
+    # Only set temperature, avoid top_p to prevent conflicts with some providers
     base_config = {
         "temperature": 0.1,
         "max_tokens": 2000,
@@ -227,11 +228,13 @@ def _create_embedder_config(provider, model, api_key, base_url, ollama_base_url,
 def get_default_memory_config():
     """Get default memory client configuration with sensible defaults."""
     # Detect vector store based on environment variables
+    # Default collection name is "memories" for backward compatibility with old data
+    collection_name = os.environ.get('QDRANT_COLLECTION', 'memories')
     vector_store_config = {
-        "collection_name": "openmemory",
-        "host": "mem0_store",
+        "collection_name": collection_name,
+        "host": "127.0.0.1",  # Default host
     }
-    
+
     # Check for different vector store configurations based on environment variables
     if os.environ.get('CHROMA_HOST') and os.environ.get('CHROMA_PORT'):
         vector_store_provider = "chroma"
@@ -359,7 +362,20 @@ def get_default_memory_config():
     )
     print(f"Auto-detected embedder provider: {embedder_provider}")
 
-    return {
+    # Detect graph store (Neo4j) from environment variables
+    graph_store_config = None
+    if os.environ.get('NEO4J_URI'):
+        graph_store_config = {
+            "provider": "neo4j",
+            "config": {
+                "url": os.environ.get('NEO4J_URI', 'bolt://localhost:7687'),
+                "username": os.environ.get('NEO4J_USERNAME', 'neo4j'),
+                "password": os.environ.get('NEO4J_PASSWORD', 'mem0password'),
+            }
+        }
+        print(f"Auto-detected graph store: neo4j at {graph_store_config['config']['url']}")
+
+    config = {
         "vector_store": {
             "provider": vector_store_provider,
             "config": vector_store_config
@@ -374,6 +390,12 @@ def get_default_memory_config():
         },
         "version": "v1.1"
     }
+
+    # Add graph_store if configured
+    if graph_store_config:
+        config["graph_store"] = graph_store_config
+
+    return config
 
 
 def _parse_environment_variables(config_dict):

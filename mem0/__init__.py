@@ -16,6 +16,7 @@ from mem0.observation import (
     ProjectDetector,
 )
 from mem0.ailearn import enable_ailearn, Mem0AILearn
+from mem0.ailearn.enhanced import enable_enhanced_ailearn, EnhancedAILearn
 
 __all__ = [
     # Core mem0
@@ -31,7 +32,10 @@ __all__ = [
     "ObservationBuffer",
     "PrivacyFilter",
     "ProjectDetector",
-    # AI Learning Integration
+    # AI Learning Integration (Basic - Deprecated)
     "enable_ailearn",
     "Mem0AILearn",
+    # AI Learning Integration (Enhanced - Recommended)
+    "enable_enhanced_ailearn",
+    "EnhancedAILearn",
 ]

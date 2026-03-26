@@ -19,7 +19,7 @@ class BaseLlmConfig(ABC):
         temperature: float = 0.1,
         api_key: Optional[str] = None,
         max_tokens: int = 2000,
-        top_p: float = 0.1,
+        top_p: Optional[float] = None,  # Default to None to avoid conflicts with providers like Bedrock
         top_k: int = 1,
         enable_vision: bool = False,
         vision_details: Optional[str] = "auto",

@@ -241,3 +241,24 @@ def after_memory_update(mapper, connection, target):
     db = Session(bind=connection)
     categorize_memory(target, db)
     db.close()
+
+
+class Turn(Base):
+    """存储原始对话 turn（用户-模型的完整交互）"""
+    __tablename__ = "turns"
+
+    id = Column(UUID, primary_key=True, default=lambda: uuid.uuid4())
+    session_id = Column(String, nullable=False, index=True)
+    user_id = Column(String, nullable=False, index=True)
+    agent_id = Column(String, nullable=True, index=True)
+    messages = Column(JSON, nullable=False)
+    source = Column(String, default="openclaw")
+    created_at = Column(DateTime, default=get_current_utc_time, index=True)
+    message_count = Column(Integer, default=0)
+    tool_call_count = Column(Integer, default=0)
+    total_tokens = Column(Integer, default=0)
+
+    __table_args__ = (
+        Index('idx_turn_user_session', 'user_id', 'session_id'),
+        Index('idx_turn_created', 'created_at'),
+    )

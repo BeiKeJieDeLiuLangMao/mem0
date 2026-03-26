@@ -20,7 +20,7 @@ from app.utils.permissions import check_memory_access_permissions
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi_pagination import Page, Params
 from fastapi_pagination.ext.sqlalchemy import paginate as sqlalchemy_paginate
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator, model_validator
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
@@ -97,9 +97,155 @@ def get_accessible_memory_ids(db: Session, app_id: UUID) -> Set[UUID]:
     return allowed_memory_ids
 
 
-# List all memories with filtering
-@router.get("/", response_model=Page[MemoryResponse])
+class QdrantMemoryResponse(BaseModel):
+    """Memory from Qdrant"""
+    id: str
+    content: str
+    memory_type: str  # "summary" or "fact"
+    turn_id: Optional[str] = None
+    agent_id: Optional[str] = None  # Extracted from metadata
+    source: Optional[str] = None  # Source from turn table
+    score: Optional[float] = None
+    metadata: dict = {}
+    created_at: Optional[str] = None
+
+
+class QdrantMemoryListResponse(BaseModel):
+    """List of memories from Qdrant"""
+    items: List[QdrantMemoryResponse]
+    total: int
+    page: int
+    size: int
+
+
+# List all memories with filtering (from Qdrant)
+@router.get("/", response_model=QdrantMemoryListResponse)
 async def list_memories(
+    user_id: str,
+    agent_id: Optional[str] = Query(None, description="Filter by agent_id"),
+    memory_type: Optional[str] = Query(None, description="Filter by memory_type: summary or fact"),
+    turn_id: Optional[str] = Query(None, description="Filter by turn_id"),
+    limit: int = Query(200, ge=1, le=1000, description="Max results to return"),
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
+    db: Session = Depends(get_db),
+):
+    """
+    List memories from Qdrant with optional filters.
+
+    Returns both summary and fact memories, grouped by turn_id when available.
+    """
+    try:
+        # Direct Qdrant query to avoid embedding API calls
+        from qdrant_client import QdrantClient
+
+        qdrant_client = QdrantClient(host="127.0.0.1", port=6333)
+
+        # Scroll through Qdrant to get all memories (without filter for now)
+        results = []
+        current_offset = None
+        scroll_limit = limit + offset  # Use local variable to avoid conflict
+        while len(results) < scroll_limit:
+            records, next_offset = qdrant_client.scroll(
+                collection_name="memories",
+                limit=scroll_limit,
+                offset=current_offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            if not records:
+                break
+            for record in records:
+                payload = record.payload or {}
+                # Filter by user_id in code (support both userId and user_id)
+                record_user_id = payload.get("user_id") or payload.get("userId", "")
+                if not record_user_id.startswith(user_id):
+                    continue
+
+                # Apply optional filters
+                if memory_type and payload.get("metadata", {}).get("memory_type") != memory_type:
+                    continue
+                if turn_id and payload.get("metadata", {}).get("turn_id") != turn_id:
+                    continue
+                if agent_id:
+                    # Extract agent_id from metadata (support both agentId and userId)
+                    record_agent_id = payload.get("metadata", {}).get("agent_id") or \
+                                     payload.get("agentId") or \
+                                     payload.get("userId", "")
+                    # Check if agent_id matches (support legacy format: yishu:agent:{agent_id})
+                    if record_agent_id != agent_id and not record_agent_id.endswith(f":agent:{agent_id}"):
+                        continue
+
+                results.append({
+                    "id": str(record.id),
+                    "memory": payload.get("data", ""),
+                    "metadata": payload,
+                    "score": None,
+                })
+            if next_offset is None:
+                break
+            current_offset = next_offset
+
+        # Apply pagination
+        paginated_results = results[offset:offset + limit]
+
+        # Transform to response format
+        items = []
+        for r in paginated_results:
+            # Extract metadata
+            metadata = r.get("metadata", {})
+            memory_type = metadata.get("memory_type", "fact")
+            turn_id = metadata.get("turn_id")
+
+            # Extract agent_id from metadata (handle both agentId and userId formats)
+            agent_id = metadata.get("agentId")
+            if not agent_id:
+                # Try to extract from userId (format: yishu:agent:xxx)
+                user_id_val = metadata.get("userId", "")
+                if ":agent:" in user_id_val:
+                    agent_id = user_id_val.split(":agent:")[-1]
+
+            # 查询 source 信息（如果有 turn_id）
+            source = None
+            if turn_id:
+                try:
+                    from app.models import Turn
+                    from sqlalchemy import select
+                    turn = db.execute(select(Turn.source).where(Turn.id == UUID(turn_id))).scalar()
+                    source = turn
+                except:
+                    source = None
+            else:
+                source = "manual"  # 没有 turn_id 的记忆是手动添加的
+
+            items.append(QdrantMemoryResponse(
+                id=r.get("id", ""),
+                content=r.get("memory", ""),
+                memory_type=memory_type,
+                turn_id=turn_id,
+                agent_id=agent_id,  # Add extracted agent_id
+                source=source,     # Add source from turn
+                score=r.get("score"),
+                metadata=metadata,
+                created_at=metadata.get("createdAt"),
+            ))
+
+        return QdrantMemoryListResponse(
+            items=items,
+            total=len(results),  # Total count before pagination
+            page=(offset // limit) + 1 if limit > 0 else 1,
+            size=limit,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Failed to list memories from Qdrant: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to list memories: {str(e)}")
+
+
+# Legacy SQLite-based list endpoint (deprecated, kept for compatibility)
+@router.get("/legacy", response_model=Page[MemoryResponse], include_in_schema=False)
+async def list_memories_legacy(
     user_id: str,
     app_id: Optional[UUID] = None,
     from_date: Optional[int] = Query(
@@ -211,10 +357,21 @@ async def get_categories(
 
 class CreateMemoryRequest(BaseModel):
     user_id: str
-    text: str
+    text: Optional[str] = None  # Deprecated: use messages instead
+    messages: Optional[List[dict]] = None  # New: support full conversation format
     metadata: dict = {}
     infer: bool = True
     app: str = "openmemory"
+    memory_type: str = "fact"  # "summary" or "fact"
+    turn_id: Optional[str] = None  # Link to original turn
+    agent_id: Optional[str] = None  # Agent identifier
+
+    @model_validator(mode='after')
+    def validate_text_or_messages(self):
+        """Ensure either text or messages is provided."""
+        if not self.text and not self.messages:
+            raise ValueError("Either 'text' or 'messages' must be provided")
+        return self
 
 
 # Create new memory
@@ -239,91 +396,152 @@ async def create_memory(
     if not app_obj.is_active:
         raise HTTPException(status_code=403, detail=f"App {request.app} is currently paused on OpenMemory. Cannot create new memories.")
 
+    # Validate input: either text or messages must be provided
+    if not request.text and not request.messages:
+        raise HTTPException(
+            status_code=400,
+            detail="Either 'text' or 'messages' must be provided"
+        )
+
+    # Convert text to messages format for backward compatibility
+    if request.text and not request.messages:
+        messages = [{"role": "user", "content": request.text}]
+    else:
+        messages = request.messages
+
     # Log what we're about to do
-    logging.info(f"Creating memory for user_id: {request.user_id} with app: {request.app}")
-    
+    logging.info(f"Creating memory for user_id: {request.user_id}, agent_id: {request.agent_id} with app: {request.app}")
+    logging.info(f"Messages count: {len(messages)}, infer: {request.infer}")
+
     # Try to get memory client safely
+    memory_client = None
     try:
         memory_client = get_memory_client()
         if not memory_client:
             raise Exception("Memory client is not available")
     except Exception as client_error:
         logging.warning(f"Memory client unavailable: {client_error}. Creating memory in database only.")
-        # Return a json response with the error
-        return {
-            "error": str(client_error)
-        }
 
     # Try to save to Qdrant via memory_client
-    try:
-        qdrant_response = memory_client.add(
-            request.text,
-            user_id=request.user_id,  # Use string user_id to match search
-            metadata={
+    # If Qdrant fails, we still save to database as a fallback
+    created_memories = []
+    qdrant_memory_id = None
+
+    if memory_client:
+        try:
+            # Build metadata for mem0
+            mem0_metadata = {
                 "source_app": "openmemory",
                 "mcp_client": request.app,
-            },
-            infer=request.infer
-        )
-        
-        # Log the response for debugging
-        logging.info(f"Qdrant response: {qdrant_response}")
-        
-        # Process Qdrant response
-        if isinstance(qdrant_response, dict) and 'results' in qdrant_response:
-            created_memories = []
-            
-            for result in qdrant_response['results']:
-                if result['event'] == 'ADD':
-                    # Get the Qdrant-generated ID
-                    memory_id = UUID(result['id'])
-                    
-                    # Check if memory already exists
-                    existing_memory = db.query(Memory).filter(Memory.id == memory_id).first()
-                    
-                    if existing_memory:
-                        # Update existing memory
-                        existing_memory.state = MemoryState.active
-                        existing_memory.content = result['memory']
-                        memory = existing_memory
-                    else:
-                        # Create memory with the EXACT SAME ID from Qdrant
-                        memory = Memory(
-                            id=memory_id,  # Use the same ID that Qdrant generated
-                            user_id=user.id,
-                            app_id=app_obj.id,
-                            content=result['memory'],
-                            metadata_=request.metadata,
-                            state=MemoryState.active
+                "memory_type": request.memory_type,
+                "turn_id": request.turn_id,
+            }
+            if request.agent_id:
+                mem0_metadata["agent_id"] = request.agent_id
+
+            # Use mem0's add() method with proper messages format
+            qdrant_response = memory_client.add(
+                messages,  # Pass messages directly
+                user_id=request.user_id,
+                agent_id=request.agent_id,
+                metadata=mem0_metadata,
+                infer=request.infer
+            )
+
+            # Log the response for debugging
+            logging.info(f"Qdrant response: {qdrant_response}")
+            logging.info(f"Qdrant response type: {type(qdrant_response)}")
+
+            # Process Qdrant response
+            if isinstance(qdrant_response, dict) and 'results' in qdrant_response:
+                for result in qdrant_response['results']:
+                    logging.info(f"Processing result: {result}")
+                    logging.info(f"Result keys: {result.keys()}")
+                    logging.info(f"Result.get('memory'): {result.get('memory')}")
+                    logging.info(f"Result.get('text'): {result.get('text')}")
+
+                    if result.get('event') == 'ADD':
+                        memory_id_str = result.get('id')
+                        if not memory_id_str:
+                            logging.warning(f"Skipping memory without id: {result}")
+                            continue
+
+                        qdrant_memory_id = UUID(memory_id_str)
+                        memory_content = result.get('memory') or result.get('text')
+
+                        if not memory_content:
+                            logging.warning(f"Memory {memory_id_str} has no content, skipping")
+                            continue
+
+                        # Check if memory already exists
+                        existing_memory = db.query(Memory).filter(Memory.id == qdrant_memory_id).first()
+
+                        if existing_memory:
+                            # Update existing memory
+                            existing_memory.state = MemoryState.active
+                            existing_memory.content = memory_content
+                            memory = existing_memory
+                        else:
+                            # Create memory with the EXACT SAME ID from Qdrant
+                            memory = Memory(
+                                id=qdrant_memory_id,
+                                user_id=user.id,
+                                app_id=app_obj.id,
+                                content=memory_content,
+                                metadata_=request.metadata,
+                                state=MemoryState.active
+                            )
+                            db.add(memory)
+
+                        # Create history entry
+                        history = MemoryStatusHistory(
+                            memory_id=qdrant_memory_id,
+                            changed_by=user.id,
+                            old_state=MemoryState.deleted if existing_memory else MemoryState.deleted,
+                            new_state=MemoryState.active
                         )
-                        db.add(memory)
-                    
-                    # Create history entry
-                    history = MemoryStatusHistory(
-                        memory_id=memory_id,
-                        changed_by=user.id,
-                        old_state=MemoryState.deleted if existing_memory else MemoryState.deleted,
-                        new_state=MemoryState.active
-                    )
-                    db.add(history)
-                    
-                    created_memories.append(memory)
-            
-            # Commit all changes at once
-            if created_memories:
-                db.commit()
-                for memory in created_memories:
-                    db.refresh(memory)
-                
-                # Return the first memory (for API compatibility)
-                # but all memories are now saved to the database
-                return created_memories[0]
-    except Exception as qdrant_error:
-        logging.warning(f"Qdrant operation failed: {qdrant_error}.")
-        # Return a json response with the error
-        return {
-            "error": str(qdrant_error)
-        }
+                        db.add(history)
+
+                        created_memories.append(memory)
+        except Exception as qdrant_error:
+            import traceback
+            logging.warning(f"Qdrant operation failed: {qdrant_error}. Falling back to database only.")
+            logging.warning(f"Qdrant error traceback: {traceback.format_exc()}")
+
+    # If Qdrant failed or memory_client is not available, save directly to database
+    if not created_memories:
+        logging.info("Saving memory directly to database (Qdrant unavailable or failed)")
+        # Extract content: prefer text field, fallback to messages[0].content
+        fallback_content = request.text
+        if not fallback_content and request.messages:
+            fallback_content = request.messages[0].get("content", "") if request.messages else ""
+        if not fallback_content:
+            raise HTTPException(
+                status_code=400,
+                detail="No content provided: text and messages are both empty"
+            )
+        # Create a simple memory without fact extraction
+        memory = Memory(
+            user_id=user.id,
+            app_id=app_obj.id,
+            content=fallback_content,
+            metadata_=request.metadata,
+            state=MemoryState.active
+        )
+        db.add(memory)
+        created_memories.append(memory)
+
+    # Commit all changes at once
+    if created_memories:
+        db.commit()
+        for memory in created_memories:
+            db.refresh(memory)
+
+        # Return the first memory
+        return created_memories[0]
+
+    # Should not reach here, but return error if somehow we get here
+    return {"error": "Failed to create memory"}
 
 
 

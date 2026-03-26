@@ -1,5 +1,7 @@
+from contextlib import contextmanager
 from typing import Tuple
 
+from app.database import SessionLocal
 from app.models import App, User
 from sqlalchemy.orm import Session
 
@@ -31,3 +33,19 @@ def get_user_and_app(db: Session, user_id: str, app_id: str) -> Tuple[User, App]
     user = get_or_create_user(db, user_id)
     app = get_or_create_app(db, user, app_id)
     return user, app
+
+
+@contextmanager
+def get_db_session():
+    """Get a database session as a context manager.
+
+    Usage:
+        with get_db_session() as db:
+            # use db here
+        # session automatically closed
+    """
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
