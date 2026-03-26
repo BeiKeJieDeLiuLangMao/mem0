@@ -2,30 +2,21 @@
  * Shared type definitions for the OpenClaw Mem0 plugin.
  */
 
+// NOTE: Mem0Mode (platform | open-source) is deprecated.
+// All operations now go through the OpenMemory HTTP API.
 export type Mem0Mode = "platform" | "open-source";
 
 export type Mem0Config = {
-  mode: Mem0Mode;
-  // Platform-specific
-  apiKey?: string;
-  orgId?: string;
-  projectId?: string;
-  customInstructions: string;
-  customCategories: Record<string, string>;
-  enableGraph: boolean;
-  // OSS-specific
-  customPrompt?: string;
-  oss?: {
-    embedder?: { provider: string; config: Record<string, unknown> };
-    vectorStore?: { provider: string; config: Record<string, unknown> };
-    llm?: { provider: string; config: Record<string, unknown> };
-    historyDbPath?: string;
-    disableHistory?: boolean;
-  };
-  // Shared
+  // OpenMemory API URL
+  apiUrl: string;
+  // Shared settings
   userId: string;
   autoCapture: boolean;
   autoRecall: boolean;
+  customInstructions: string;
+  customCategories: Record<string, string>;
+  customPrompt?: string;
+  enableGraph: boolean;
   searchThreshold: number;
   topK: number;
 };
@@ -33,10 +24,6 @@ export type Mem0Config = {
 export interface AddOptions {
   user_id: string;
   run_id?: string;
-  custom_instructions?: string;
-  custom_categories?: Array<Record<string, string>>;
-  enable_graph?: boolean;
-  output_format?: string;
   source?: string;
 }
 
@@ -88,4 +75,13 @@ export interface Mem0Provider {
   get(memoryId: string): Promise<MemoryItem>;
   getAll(options: ListOptions): Promise<MemoryItem[]>;
   delete(memoryId: string): Promise<void>;
+  // Optional: record a conversation turn (OpenMemoryProvider implements this)
+  recordTurn?(params: {
+    sessionId: string;
+    userId: string;
+    agentId?: string;
+    messages: Array<{ role: string; content: string }>;
+    toolCallCount?: number;
+    totalTokens?: number;
+  }): Promise<void>;
 }

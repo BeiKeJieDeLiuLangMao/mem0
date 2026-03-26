@@ -2,30 +2,15 @@
   "id": "openclaw-mem0",
   "kind": "memory",
   "uiHints": {
-    "mode": {
-      "label": "Mode",
-      "help": "\"platform\" for Mem0 cloud, \"open-source\" for self-hosted"
-    },
-    "apiKey": {
-      "label": "Mem0 API Key",
-      "sensitive": true,
-      "placeholder": "m0-...",
-      "help": "API key from app.mem0.ai (or use ${MEM0_API_KEY}). Only needed for platform mode."
+    "apiUrl": {
+      "label": "OpenMemory API URL",
+      "placeholder": "http://localhost:8765",
+      "help": "Base URL of the OpenMemory Python API service"
     },
     "userId": {
       "label": "Default User ID",
       "placeholder": "default",
       "help": "User ID for scoping memories"
-    },
-    "orgId": {
-      "label": "Organization ID",
-      "placeholder": "org-...",
-      "advanced": true
-    },
-    "projectId": {
-      "label": "Project ID",
-      "placeholder": "proj-...",
-      "advanced": true
     },
     "autoCapture": {
       "label": "Auto-Capture",
@@ -38,21 +23,21 @@
     "customInstructions": {
       "label": "Custom Instructions",
       "placeholder": "Only store user preferences and important facts...",
-      "help": "Natural language rules for what Mem0 should store or exclude (platform mode)"
+      "help": "Natural language rules for what to store or exclude during fact extraction"
     },
     "customCategories": {
       "label": "Custom Categories",
       "advanced": true,
-      "help": "Map of category names to descriptions for memory tagging (platform mode only). Sensible defaults are built in."
+      "help": "Map of category names to descriptions for memory tagging. Sensible defaults are built in."
     },
     "customPrompt": {
-      "label": "Custom Prompt (Open-Source)",
+      "label": "Custom Prompt",
       "advanced": true,
-      "help": "Custom prompt for open-source mode memory extraction."
+      "help": "Custom prompt for memory extraction."
     },
     "enableGraph": {
       "label": "Enable Graph Memory",
-      "help": "Enable Mem0 graph memory for entity relationships (platform mode only)"
+      "help": "Enable knowledge graph for entity relationships (handled by OpenMemory API)"
     },
     "searchThreshold": {
       "label": "Search Threshold",
@@ -63,35 +48,16 @@
       "label": "Top K Results",
       "placeholder": "5",
       "help": "Maximum number of memories to retrieve"
-    },
-    "oss": {
-      "label": "Open-Source Configuration",
-      "advanced": true,
-      "help": "Optional. Configure custom embedder, vector store, LLM, or history DB for open-source mode. Has sensible defaults — only override what you need."
     }
   },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "mode": {
-        "type": "string",
-        "enum": [
-          "platform",
-          "open-source",
-          "oss"
-        ]
-      },
-      "apiKey": {
+      "apiUrl": {
         "type": "string"
       },
       "userId": {
-        "type": "string"
-      },
-      "orgId": {
-        "type": "string"
-      },
-      "projectId": {
         "type": "string"
       },
       "autoCapture": {
@@ -120,47 +86,6 @@
       },
       "topK": {
         "type": "number"
-      },
-      "oss": {
-        "type": "object",
-        "properties": {
-          "embedder": {
-            "type": "object",
-            "properties": {
-              "provider": {
-                "type": "string"
-              },
-              "config": {
-                "type": "object"
-              }
-            }
-          },
-          "vectorStore": {
-            "type": "object",
-            "properties": {
-              "provider": {
-                "type": "string"
-              },
-              "config": {
-                "type": "object"
-              }
-            }
-          },
-          "llm": {
-            "type": "object",
-            "properties": {
-              "provider": {
-                "type": "string"
-              },
-              "config": {
-                "type": "object"
-              }
-            }
-          },
-          "historyDbPath": {
-            "type": "string"
-          }
-        }
       }
     },
     "required": []

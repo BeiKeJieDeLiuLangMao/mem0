@@ -1,8 +1,8 @@
 /**
  * OpenClaw Memory (Mem0) Plugin
  *
- * Long-term memory via OpenMemory HTTP API — all operations are HTTP calls
- * to the local OpenMemory Python service (http://localhost:8765 by default).
+ * Long-term memory via Mem0 — supports both the Mem0 platform
+ * and the open-source self-hosted SDK. Uses the official `mem0ai` package.
  *
  * Features:
  * - 5 tools: memory_search, memory_list, memory_store, memory_get, memory_forget
@@ -13,7 +13,7 @@
  * - Per-agent isolation: multi-agent setups write/read from separate userId namespaces
  *   automatically via sessionKey routing (zero breaking changes for single-agent setups)
  * - CLI: openclaw mem0 search, openclaw mem0 stats
- * - Turn recording: records conversation turns to the OpenMemory API
+ * - Dual mode: platform or open-source (self-hosted)
  */
 
 import { Type } from "@sinclair/typebox";
@@ -28,6 +28,7 @@ import type {
 } from "./types.ts";
 import { createProvider } from "./providers.ts";
 import { mem0ConfigSchema } from "./config.ts";
+import { extractAgentId } from "./isolation.ts";
 import {
   filterMessagesForExtraction,
 } from "./filtering.ts";
@@ -57,6 +58,13 @@ export { createProvider } from "./providers.ts";
 // Helpers
 // ============================================================================
 
+/** Convert Record<string, string> categories to the array format mem0ai expects */
+function categoriesToArray(
+  cats: Record<string, string>,
+): Array<Record<string, string>> {
+  return Object.entries(cats).map(([key, value]) => ({ [key]: value }));
+}
+
 // ============================================================================
 // Plugin Definition
 // ============================================================================
@@ -65,7 +73,7 @@ const memoryPlugin = {
   id: "openclaw-mem0",
   name: "Memory (Mem0)",
   description:
-    "Mem0 memory backend — Mem0 platform or self-hosted open-source",
+    "Mem0 memory backend — pure TypeScript open-source implementation with Qdrant and Neo4j",
   kind: "memory" as const,
   configSchema: mem0ConfigSchema,
 
@@ -89,16 +97,19 @@ const memoryPlugin = {
       resolveUserId(cfg.userId, opts, currentSessionId);
 
     api.logger.info(
-      `openclaw-mem0: registered (apiUrl: ${cfg.apiUrl}, user: ${cfg.userId}, graph: ${cfg.enableGraph}, autoRecall: ${cfg.autoRecall}, autoCapture: ${cfg.autoCapture})`,
+      `openclaw-mem0: registered (mode: ${cfg.mode}, user: ${cfg.userId}, graph: ${cfg.enableGraph}, autoRecall: ${cfg.autoRecall}, autoCapture: ${cfg.autoCapture})`,
     );
 
     // Helper: build add options
     function buildAddOptions(userIdOverride?: string, runId?: string, sessionKey?: string): AddOptions {
+      const agentId = extractAgentId(sessionKey);
       const opts: AddOptions = {
         user_id: userIdOverride || _effectiveUserId(sessionKey),
         source: "OPENCLAW",
       };
+      if (agentId) opts.agent_id = agentId;
       if (runId) opts.run_id = runId;
+      // OSS mode supports custom prompt via config
       return opts;
     }
 
@@ -150,7 +161,7 @@ const memoryPlugin = {
       id: "openclaw-mem0",
       start: () => {
         api.logger.info(
-          `openclaw-mem0: initialized (apiUrl: ${cfg.apiUrl}, user: ${cfg.userId}, autoRecall: ${cfg.autoRecall}, autoCapture: ${cfg.autoCapture})`,
+          `openclaw-mem0: initialized (mode: ${cfg.mode}, user: ${cfg.userId}, autoRecall: ${cfg.autoRecall}, autoCapture: ${cfg.autoCapture})`,
         );
       },
       stop: () => {
@@ -787,7 +798,7 @@ function registerCli(
               user_id: uid,
               source: "OPENCLAW",
             });
-            console.log(`API URL: ${cfg.apiUrl}`);
+            console.log(`Mode: ${cfg.mode}`);
             console.log(`User: ${uid}${opts.agent ? ` (agent: ${opts.agent})` : ""}`);
             console.log(
               `Total memories: ${Array.isArray(memories) ? memories.length : "unknown"}`,
@@ -955,13 +966,14 @@ function registerHooks(
   // Auto-capture: store conversation context after agent ends
   if (cfg.autoCapture) {
     api.on("agent_end", async (event, ctx) => {
-      if (!event.success || !event.messages || event.messages.length === 0) {
-        return;
-      }
-
-      // Skip non-interactive triggers (cron, heartbeat, automation)
       const trigger = (ctx as any)?.trigger ?? undefined;
       const sessionId = (ctx as any)?.sessionKey ?? undefined;
+      api.logger.info(`openclaw-mem0: agent_end trigger=${trigger}, sessionKey=${sessionId}, success=${event.success}, messages=${event.messages?.length ?? 0}`);
+
+      if (!event.success || !event.messages || event.messages.length === 0) {
+        api.logger.info("openclaw-mem0: skipping capture (no success or no messages)");
+        return;
+      }
       if (isNonInteractiveTrigger(trigger, sessionId)) {
         api.logger.info("openclaw-mem0: skipping capture for non-interactive trigger");
         return;
@@ -1046,7 +1058,10 @@ function registerHooks(
           });
         }
 
-        if (allParsed.length === 0) return;
+        if (allParsed.length === 0) {
+          api.logger.info("openclaw-mem0: no parsed messages found, skipping capture");
+          return;
+        }
 
         // Select messages: last 20 + any earlier summary messages,
         // sorted by original index to preserve chronological order.
@@ -1082,10 +1097,16 @@ function registerHooks(
         // Apply noise filtering pipeline: drop noise, strip fragments, truncate
         const formattedMessages = filterMessagesForExtraction(selected);
 
-        if (formattedMessages.length === 0) return;
+        if (formattedMessages.length === 0) {
+          api.logger.info("openclaw-mem0: no messages after filtering, skipping capture");
+          return;
+        }
 
         // Skip if no meaningful user content remains after filtering
-        if (!formattedMessages.some((m) => m.role === "user")) return;
+        if (!formattedMessages.some((m) => m.role === "user")) {
+          api.logger.info("openclaw-mem0: no user messages after filtering, skipping capture");
+          return;
+        }
 
         // Inject a timestamp preamble so the extraction model can anchor
         // time-sensitive facts to a concrete date and attribute to the correct user
@@ -1096,23 +1117,6 @@ function registerHooks(
         });
 
         const addOpts = buildAddOptions(undefined, sessionId, sessionId);
-
-        // Record the turn in OpenMemory (fire-and-forget — don't block capture)
-        if (provider.recordTurn) {
-          try {
-            await provider.recordTurn({
-              sessionId: sessionId ?? "unknown",
-              userId: cfg.userId,
-              agentId: sessionId ? sessionId.split(":")[1] : undefined,
-              messages: formattedMessages,
-              toolCallCount: (event as any).toolCallCount,
-              totalTokens: (event as any).totalTokens,
-            });
-          } catch (turnErr) {
-            api.logger.warn(`openclaw-mem0: turn recording failed: ${String(turnErr)}`);
-          }
-        }
-
         const result = await provider.add(
           formattedMessages,
           addOpts,

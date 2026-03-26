@@ -2,7 +2,7 @@
  * Configuration parsing, env var resolution, and default instructions/categories.
  */
 
-import type { Mem0Config } from "./types.ts";
+import type { Mem0Config, Mem0Mode } from "./types.ts";
 
 // ============================================================================
 // Env Var Resolution
@@ -154,8 +154,11 @@ export const DEFAULT_CUSTOM_CATEGORIES: Record<string, string> = {
 // ============================================================================
 
 const ALLOWED_KEYS = [
-  "apiUrl",
+  "mode",
+  "apiKey",
   "userId",
+  "orgId",
+  "projectId",
   "autoCapture",
   "autoRecall",
   "customInstructions",
@@ -164,14 +167,6 @@ const ALLOWED_KEYS = [
   "enableGraph",
   "searchThreshold",
   "topK",
-];
-
-// Legacy keys from the old mem0ai SDK config format
-const LEGACY_KEYS = [
-  "mode",
-  "apiKey",
-  "orgId",
-  "projectId",
   "oss",
 ];
 
@@ -185,49 +180,34 @@ function assertAllowedKeys(
   throw new Error(`${label} has unknown keys: ${unknown.join(", ")}`);
 }
 
-function detectLegacyConfig(cfg: Record<string, unknown>): void {
-  const legacyFound = LEGACY_KEYS.filter((key) => key in cfg);
-  if (legacyFound.length === 0) return;
-  throw new Error(
-    `openclaw-mem0 config format has changed. ` +
-    `Remove legacy keys: ${legacyFound.join(", ")}. ` +
-    `Use "apiUrl" instead (e.g. "http://localhost:8765"). ` +
-    `See the plugin README for migration instructions.`,
-  );
-}
-
 export const mem0ConfigSchema = {
   parse(value: unknown): Mem0Config {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
       throw new Error("openclaw-mem0 config required");
     }
     const cfg = value as Record<string, unknown>;
-
-    // Detect and reject legacy config format
-    detectLegacyConfig(cfg);
-
     assertAllowedKeys(cfg, ALLOWED_KEYS, "openclaw-mem0 config");
 
-    // Resolve ${ENV_VAR} in apiUrl
-    let apiUrl = "http://localhost:8765";
-    if (typeof cfg.apiUrl === "string") {
-      try {
-        apiUrl = resolveEnvVars(cfg.apiUrl);
-      } catch {
-        // If env var not set, keep the literal value (may be set at runtime)
-        apiUrl = cfg.apiUrl;
-      }
+    // Always use open-source mode (no platform mode)
+    const mode: Mem0Mode = "open-source";
+
+    // Resolve env vars in oss config
+    let ossConfig: Mem0Config["oss"];
+    if (cfg.oss && typeof cfg.oss === "object" && !Array.isArray(cfg.oss)) {
+      ossConfig = resolveEnvVarsDeep(
+        cfg.oss as Record<string, unknown>,
+      ) as unknown as Mem0Config["oss"];
     }
 
     return {
-      apiUrl,
+      mode,
       userId:
         typeof cfg.userId === "string" && cfg.userId ? cfg.userId : "default",
       autoCapture: cfg.autoCapture !== false,
       autoRecall: cfg.autoRecall !== false,
-      customInstructions:
-        typeof cfg.customInstructions === "string"
-          ? cfg.customInstructions
+      customPrompt:
+        typeof cfg.customPrompt === "string"
+          ? cfg.customPrompt
           : DEFAULT_CUSTOM_INSTRUCTIONS,
       customCategories:
         cfg.customCategories &&
@@ -235,14 +215,11 @@ export const mem0ConfigSchema = {
           !Array.isArray(cfg.customCategories)
           ? (cfg.customCategories as Record<string, string>)
           : DEFAULT_CUSTOM_CATEGORIES,
-      customPrompt:
-        typeof cfg.customPrompt === "string"
-          ? cfg.customPrompt
-          : DEFAULT_CUSTOM_INSTRUCTIONS,
       enableGraph: cfg.enableGraph === true,
       searchThreshold:
         typeof cfg.searchThreshold === "number" ? cfg.searchThreshold : 0.5,
       topK: typeof cfg.topK === "number" ? cfg.topK : 5,
+      oss: ossConfig,
     };
   },
 };

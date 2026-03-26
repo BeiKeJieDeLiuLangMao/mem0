@@ -1,6 +1,6 @@
 import logging
 from datetime import UTC, datetime
-from typing import List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 from uuid import UUID
 
 from app.database import get_db
@@ -544,6 +544,65 @@ async def create_memory(
     return {"error": "Failed to create memory"}
 
 
+# Semantic vector search
+class SemanticSearchResponse(BaseModel):
+    items: List[QdrantMemoryResponse] = []
+    total: int = 0
+
+
+@router.get("/search", response_model=SemanticSearchResponse)
+async def search_memories_semantic(
+    user_id: str = Query(..., description="User identifier"),
+    query: str = Query(..., min_length=1, description="Semantic search query"),
+    agent_id: Optional[str] = Query(None, description="Filter by agent ID"),
+    limit: int = Query(10, ge=1, le=100, description="Max results"),
+    threshold: float = Query(0.0, ge=0.0, le=1.0, description="Min score threshold"),
+    db: Session = Depends(get_db),
+):
+    """
+    Semantic vector search over memories using the configured embedder + vector store.
+
+    Embeds the query using the same model used for memory storage, then performs
+    a cosine similarity search in Qdrant filtered by user_id (and optionally agent_id).
+    Returns memories with similarity scores.
+    """
+    memory_client = get_memory_client()
+
+    filters: Dict[str, Any] = {"user_id": user_id}
+    if agent_id:
+        filters["agent_id"] = agent_id
+
+    try:
+        embeddings = memory_client.embedding_model.embed(query, "search")
+        hits = memory_client.vector_store.search(
+            query=query,
+            vectors=embeddings,
+            limit=limit,
+            filters=filters,
+        )
+    except Exception as e:
+        logging.error(f"Semantic search failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Search failed: {e}")
+
+    results = []
+    for h in hits:
+        if h.score < threshold:
+            continue
+        payload = h.payload or {}
+        results.append(
+            QdrantMemoryResponse(
+                id=str(h.id) if h.id else None,
+                content=payload.get("data") or payload.get("text") or "",
+                memory_type=payload.get("memory_type"),
+                agent_id=payload.get("agent_id"),
+                source=payload.get("source_app"),
+                score=h.score,
+                created_at=payload.get("created_at"),
+                metadata_=payload,
+            )
+        )
+
+    return SemanticSearchResponse(items=results, total=len(results))
 
 
 # Get memory by ID
