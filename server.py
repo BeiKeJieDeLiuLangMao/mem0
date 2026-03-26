@@ -528,6 +528,115 @@ async def get_skill_effectiveness(
     return {"skills": [], "user_id": user_id}
 
 
+# =============================================================================
+# Graph (Neo4j) 端点
+# =============================================================================
+
+NEO4J_URI = os.environ.get("NEO4J_URI", "bolt://localhost:7687")
+NEO4J_USERNAME = os.environ.get("NEO4J_USERNAME", "neo4j")
+NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", "mem0password")
+NEO4J_DATABASE = os.environ.get("NEO4J_DATABASE", "neo4j")
+
+
+def _get_neo4j_driver():
+    """懒加载获取 Neo4j 驱动"""
+    from neo4j import GraphDatabase
+    return GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD))
+
+
+@app.get("/api/v1/graph")
+async def get_graph(
+    user_id: str = Query(..., description="User identifier"),
+    agent_id: Optional[str] = Query(None, description="Filter by agent ID"),
+    limit: int = Query(200, ge=1, le=1000, description="Max relations"),
+):
+    """
+    从 Neo4j 图数据库获取实体关系，返回 {source, relationship, target} 列表，
+    可直接用于 force-directed graph 可视化。
+    """
+    try:
+        driver = _get_neo4j_driver()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Neo4j unavailable: {e}")
+
+    try:
+        with driver.session(database=NEO4J_DATABASE) as session:
+            params = {"user_id": user_id, "limit": limit}
+
+            cypher = """
+            MATCH (n)-[r]->(m)
+            WHERE n.user_id STARTS WITH $user_id AND m.user_id STARTS WITH $user_id
+            AND (r.valid IS NULL OR r.valid = true)
+            RETURN n.name AS source, type(r) AS relationship, m.name AS target
+            LIMIT $limit
+            """
+
+            result = session.run(cypher, params)
+            records = [dict(r) for r in result]
+
+        driver.close()
+        return {"relations": records, "total": len(records)}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Graph query failed: {e}")
+
+
+@app.get("/api/v1/graph/stats")
+async def get_graph_stats(
+    user_id: str = Query(..., description="User identifier"),
+):
+    """
+    获取图谱统计：节点数、关系数、关系类型分布。
+    """
+    try:
+        driver = _get_neo4j_driver()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Neo4j unavailable: {e}")
+
+    try:
+        with driver.session(database=NEO4J_DATABASE) as session:
+            # 节点数
+            node_count = session.run(
+                "MATCH (n) WHERE n.user_id STARTS WITH $user_id RETURN count(n) AS cnt",
+                {"user_id": user_id}
+            ).single()["cnt"]
+
+            # 关系数
+            rel_count = session.run(
+                """
+                MATCH (n)-[r]->(m)
+                WHERE n.user_id STARTS WITH $user_id
+                AND (r.valid IS NULL OR r.valid = true)
+                RETURN count(r) AS cnt
+                """,
+                {"user_id": user_id}
+            ).single()["cnt"]
+
+            # 关系类型分布
+            rel_types = session.run(
+                """
+                MATCH (n)-[r]->(m)
+                WHERE n.user_id STARTS WITH $user_id
+                AND (r.valid IS NULL OR r.valid = true)
+                RETURN type(r) AS rel_type, count(*) AS cnt
+                ORDER BY cnt DESC
+                """,
+                {"user_id": user_id}
+            ).data()
+
+        driver.close()
+        return {
+            "nodes": node_count,
+            "relations": rel_count,
+            "relation_types": rel_types,
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Graph stats failed: {e}")
+
+
 if __name__ == "__main__":
     print("🚀 启动 mem0 FastAPI 服务器...")
     print(f"📡 Qdrant 地址: http://127.0.0.1:6333")
