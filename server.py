@@ -636,6 +636,48 @@ async def get_graph(
         raise HTTPException(status_code=500, detail=f"Graph query failed: {e}")
 
 
+@app.get("/api/v1/graph/search")
+async def search_graph(
+    q: str = Query(..., description="Search query (matches node name or relationship type)"),
+    user_id: str = Query(..., description="User identifier"),
+    agent_id: Optional[str] = Query(None, description="Filter by agent ID"),
+    limit: int = Query(100, ge=1, le=500),
+):
+    """
+    在 Neo4j 图数据库中搜索节点和关系（按名称模糊匹配），
+    用于图谱视图的搜索功能。
+    """
+    try:
+        driver = _get_neo4j_driver()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Neo4j unavailable: {e}")
+
+    try:
+        with driver.session(database=NEO4J_DATABASE) as session:
+            q_lower = q.lower()
+
+            # 搜索节点：匹配 source 或 target 名称（大小写不敏感）
+            node_cypher = f"""
+            MATCH (n)-[r]->(m)
+            WHERE n.user_id STARTS WITH $user_id AND m.user_id STARTS WITH $user_id
+            AND (r.valid IS NULL OR r.valid = true)
+            AND (toLower(n.name) CONTAINS $q_lower OR toLower(m.name) CONTAINS $q_lower
+                 OR toLower(type(r)) CONTAINS $q_lower)
+            RETURN n.name AS source, type(r) AS relationship, m.name AS target
+            LIMIT $limit
+            """
+
+            result = session.run(node_cypher, {"user_id": user_id, "q_lower": q_lower, "limit": limit})
+            records = [dict(r) for r in result]
+
+        driver.close()
+        return {"relations": records, "total": len(records)}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Graph search failed: {e}")
+
+
 @app.get("/api/v1/graph/stats")
 async def get_graph_stats(
     user_id: str = Query(..., description="User identifier"),
