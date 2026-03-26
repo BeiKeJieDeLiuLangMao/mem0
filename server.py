@@ -90,12 +90,12 @@ def add_memory_to_qdrant(text: str, user_id: str, agent_id: str = None, metadata
     mem_metadata = (metadata or {}).copy()
     mem_metadata.update({
         "data": text,
-        "user_id": user_id,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "userId": user_id,
+        "createdAt": datetime.now(timezone.utc).isoformat(),
         "source": "openclaw_plugin"
     })
     if agent_id:
-        mem_metadata["agent_id"] = agent_id
+        mem_metadata["agentId"] = agent_id
 
     embedding = get_embedding(text)
     memory_id = str(uuid.uuid4())
@@ -131,9 +131,9 @@ def search_memories_vector(query: str, user_id: str, limit: int = 5, agent_id: s
     memories = []
     for r in results.points:
         payload = r.payload or {}
-        if user_id and user_id not in (payload.get('user_id', '') or ''):
+        if user_id and user_id not in (payload.get('userId', '') or ''):
             continue
-        if agent_id is not None and payload.get('agent_id') != agent_id:
+        if agent_id is not None and payload.get('agentId') != agent_id:
             continue
         memories.append({
             "id": r.id,
@@ -166,7 +166,10 @@ def get_all_memories(user_id: str, agent_id: str = None) -> List[Dict]:
         user_id_field = payload.get('user_id') or payload.get('userId', '')
         if user_id and user_id not in str(user_id_field):
             continue
-        if agent_id is not None and payload.get('agent_id') != agent_id and payload.get('agentId') != agent_id:
+        # agent_id 过滤：两个字段有一个匹配就保留
+        aid_snake = payload.get('agent_id')
+        aid_camel = payload.get('agentId')
+        if agent_id is not None and aid_snake != agent_id and aid_camel != agent_id:
             continue
         memories.append({
             "id": point.id,
@@ -192,13 +195,13 @@ def get_all_agents(user_id: str) -> List[Dict]:
     agent_stats = {}
     for point in (results[0] or []):
         payload = point.payload or {}
-        if user_id and user_id not in (payload.get('user_id', '') or ''):
+        if user_id and user_id not in (payload.get('userId', '') or ''):
             continue
-        aid = payload.get('agent_id', 'unknown') or 'unknown'
+        aid = payload.get('agentId') or payload.get('agent_id') or 'unknown'
         if aid not in agent_stats:
             agent_stats[aid] = {"agent_id": aid, "count": 0, "latest": None}
         agent_stats[aid]["count"] += 1
-        created = payload.get('created_at')
+        created = payload.get('createdAt')
         if created:
             if not agent_stats[aid]["latest"] or created > agent_stats[aid]["latest"]:
                 agent_stats[aid]["latest"] = created
@@ -224,14 +227,16 @@ def get_memory_stats_by_agent(user_id: str, agent_id: str = None) -> Dict:
     by_agent = {}
     for point in (results[0] or []):
         payload = point.payload or {}
-        if user_id and user_id not in (payload.get('user_id', '') or ''):
+        if user_id and user_id not in (payload.get('userId', '') or ''):
             continue
-        if agent_id is not None and payload.get('agent_id') != agent_id and payload.get('agentId') != agent_id:
+        aid_snake = payload.get('agent_id')
+        aid_camel = payload.get('agentId')
+        aid = aid_camel or aid_snake or 'unknown'
+        if agent_id is not None and aid_snake != agent_id and aid_camel != agent_id:
             continue
         total += 1
         source = payload.get('source', 'unknown') or 'unknown'
         by_source[source] = by_source.get(source, 0) + 1
-        aid = payload.get('agent_id', 'unknown') or 'unknown'
         if agent_id is None:  # 全局统计时才按 agent 分组
             if aid not in by_agent:
                 by_agent[aid] = {"agent_id": aid, "count": 0}
