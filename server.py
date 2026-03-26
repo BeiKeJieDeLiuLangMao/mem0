@@ -549,6 +549,55 @@ def _get_neo4j_driver():
     return GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD))
 
 
+@app.get("/api/v1/graph/agents")
+async def get_graph_agents(
+    user_id: str = Query(..., description="User prefix (e.g. yishu)"),
+):
+    """
+    获取当前用户的可选 agent 列表（图谱隔离维度），
+    用于填充图谱视图的 agent 选择下拉框。
+    """
+    try:
+        driver = _get_neo4j_driver()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Neo4j unavailable: {e}")
+
+    try:
+        with driver.session(database=NEO4J_DATABASE) as session:
+            result = session.run(
+                """
+                MATCH (n)
+                WHERE n.user_id STARTS WITH $user_id
+                RETURN DISTINCT n.user_id AS user_id, count(*) AS node_count
+                ORDER BY node_count DESC
+                """,
+                {"user_id": user_id}
+            ).data()
+        driver.close()
+        # 提取 agent 名称（去掉前缀）
+        prefix = user_id + ":agent:"
+        agents = []
+        for row in result:
+            uid = row["user_id"]
+            if uid.startswith(prefix):
+                agents.append({
+                    "agent_id": uid,
+                    "label": uid[len(prefix):],
+                    "node_count": row["node_count"],
+                })
+            else:
+                agents.append({
+                    "agent_id": uid,
+                    "label": uid,
+                    "node_count": row["node_count"],
+                })
+        return {"agents": agents}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Graph agents query failed: {e}")
+
+
 @app.get("/api/v1/graph")
 async def get_graph(
     user_id: str = Query(..., description="User identifier"),
